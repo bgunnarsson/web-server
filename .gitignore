@@ -1,0 +1,15 @@
+# Secrets are never committed. `scripts/10-collect-secrets.sh` writes here.
+secrets/
+*.env
+!*.env.example
+# Volume backups produced by 11-backup-volumes.sh
+backups/
+*.tar
+*.tar.gz
+*.tar.zst
+*.sql
+*.sql.gz
+# Cloned application source (see scripts/40-deploy-stacks.sh)
+stacks/*/src/
+# Traefik ACME state (contains private keys)
+acme.json

@@ -1,0 +1,49 @@
+# Static Traefik config for the target host.
+#
+# Differences from robco's Dokploy-generated traefik.yml, and why:
+#   - no `swarm` provider: the target runs plain `docker compose`, not a swarm.
+#   - `api.insecure` removed: robco had the dashboard on :8080 with no auth.
+#   - real ACME email instead of Dokploy's `test@localhost.com` placeholder
+#     (that address gets no expiry warnings from Let's Encrypt).
+#
+# HTTP (:80) is NOT redirected to HTTPS. Public traffic arrives from cloudflared
+# over plain HTTP on loopback; a redirect there bounces the browser back through
+# Cloudflare into an infinite loop. TLS termination for public sites is
+# Cloudflare's job. The :443 entrypoint exists for tailnet-only hostnames
+# (penpot), which are reached directly and need a real certificate.
+
+providers:
+  docker:
+    exposedByDefault: false
+    watch: true
+    network: proxy
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+
+entryPoints:
+  web:
+    address: ":80"
+  websecure:
+    address: ":443"
+    http3:
+      advertisedPort: 443
+
+api:
+  dashboard: false
+
+log:
+  level: INFO
+
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      email: "CHANGEME@example.com"   # set by scripts/20-provision-target.sh from ACME_EMAIL
+      storage: /etc/traefik/dynamic/acme.json
+      # DNS-01, not HTTP-01. These hostnames sit behind Cloudflare's proxy (and
+      # one is not publicly reachable at all), so HTTP-01 cannot complete.
+      dnsChallenge:
+        provider: cloudflare
+        resolvers:
+          - "1.1.1.1:53"
+          - "8.8.8.8:53"

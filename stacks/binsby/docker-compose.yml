@@ -1,0 +1,32 @@
+# binsby — static site, built from its own repo's Dockerfile.
+# nginx:alpine serving the repo root as-is.
+#
+# Source code is cloned to ./src by scripts/40-deploy-stacks.sh.
+services:
+  web:
+    build: ./src
+    image: binsby:local
+    restart: unless-stopped
+    expose:
+      - "80"
+    networks:
+      - proxy
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=proxy
+      # HTTP — this is what cloudflared hands traffic to.
+      - "traefik.http.routers.binsby.rule=Host(`binsby.com`) || Host(`www.binsby.com`)"
+      - traefik.http.routers.binsby.entrypoints=web
+      - traefik.http.routers.binsby.service=binsby
+      # HTTPS at the origin. Unused for public traffic (Cloudflare terminates
+      # TLS) but kept so the site works if the tunnel is ever bypassed.
+      - "traefik.http.routers.binsby-secure.rule=Host(`binsby.com`) || Host(`www.binsby.com`)"
+      - traefik.http.routers.binsby-secure.entrypoints=websecure
+      - traefik.http.routers.binsby-secure.service=binsby
+      - traefik.http.routers.binsby-secure.tls=true
+      - traefik.http.routers.binsby-secure.tls.certresolver=letsencrypt
+      - traefik.http.services.binsby.loadbalancer.server.port=80
+
+networks:
+  proxy:
+    external: true

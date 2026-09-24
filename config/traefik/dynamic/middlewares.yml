@@ -1,0 +1,15 @@
+http:
+  middlewares:
+    # Kept for parity with robco. Do NOT attach this to a router that serves
+    # traffic arriving from cloudflared — see the note in ../traefik.yml.
+    redirect-to-https:
+      redirectScheme:
+        scheme: https
+        permanent: true
+
+    security-headers:
+      headers:
+        frameDeny: true
+        contentTypeNosniff: true
+        browserXssFilter: true
+        referrerPolicy: strict-origin-when-cross-origin

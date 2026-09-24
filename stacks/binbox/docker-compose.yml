@@ -1,0 +1,77 @@
+# binbox (galdur.dev) — the only custom application here, and the only stack
+# with a large data volume (~1.3 GB: two SQLite DBs + ~6400 card images).
+#
+# Two containers: the Node app, and `forge` (a JVM sidecar) reachable only on
+# the private `internal` network. The app talks to it at forge:8791.
+#
+# Source is cloned to ./src by scripts/40-deploy-stacks.sh.
+services:
+  binbox:
+    build:
+      context: ./src
+      dockerfile: Dockerfile
+    image: binbox:latest
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      SERVER_PORT: 8787
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set in stacks/binbox/.env}
+      BETTER_AUTH_URL: ${BETTER_AUTH_URL:?set in stacks/binbox/.env}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:?set in stacks/binbox/.env}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:?set in stacks/binbox/.env}
+      TRUSTED_ORIGINS: ${TRUSTED_ORIGINS:-}
+      ADMIN_EMAILS: ${ADMIN_EMAILS:-}
+      BINBOX_DB_PATH: /app/data/binbox.db
+      BINBOX_CATALOG_DB_PATH: /app/data/catalog.db
+      BINBOX_IMAGES_DIR: /app/data/images
+      BINBOX_CATALOG_AUTOSYNC: ${BINBOX_CATALOG_AUTOSYNC:-on}
+      BINBOX_FORGE_HOST: forge
+      BINBOX_FORGE_PORT: 8791
+    volumes:
+      - binbox-data:/app/data
+    depends_on:
+      forge:
+        condition: service_healthy
+    expose:
+      - "8787"
+    networks:
+      - proxy
+      - internal
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=proxy
+      - "traefik.http.routers.binbox.rule=Host(`galdur.dev`) || Host(`www.galdur.dev`)"
+      - traefik.http.routers.binbox.entrypoints=web
+      - traefik.http.routers.binbox.service=binbox
+      - "traefik.http.routers.binbox-secure.rule=Host(`galdur.dev`) || Host(`www.galdur.dev`)"
+      - traefik.http.routers.binbox-secure.entrypoints=websecure
+      - traefik.http.routers.binbox-secure.service=binbox
+      - traefik.http.routers.binbox-secure.tls=true
+      - traefik.http.routers.binbox-secure.tls.certresolver=letsencrypt
+      - traefik.http.services.binbox.loadbalancer.server.port=8787
+
+  forge:
+    build:
+      context: ./src/services/forge
+      dockerfile: Dockerfile
+    image: binbox-forge:latest
+    restart: unless-stopped
+    environment:
+      JAVA_OPTS: ${FORGE_JAVA_OPTS:--Xmx1g}
+    networks:
+      - internal
+
+volumes:
+  binbox-data:
+
+networks:
+  proxy:
+    external: true
+  internal:
+    driver: bridge

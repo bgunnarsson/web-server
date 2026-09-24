@@ -68,54 +68,38 @@ Cloudflare API, not HTTP-01. That choice is load-bearing twice over:
 2. `design.bgunnarsson.dev` is not publicly reachable at all, so HTTP-01 could
    never validate it — but DNS-01 proves ownership through the API and works
    regardless.
-
 This needs `CF_DNS_API_TOKEN` on the Traefik container, with `Zone:DNS:Edit`
-and `Zone:Zone:Read` across all zones. Certificates land in
-`acme.json`, which must be mode `0600` or Traefik refuses to start.
+and `Zone:Zone:Read` across all zones. Dokploy's Traefik does not use DNS-01
+out of the box; `~/servset/dokploy/setup-letsencrypt-cloudflare.sh` switches it
+and injects the token. Run it on the target before cutover, and again if a
+Dokploy update ever recreates Traefik.
 
 Certs are **not** migrated. Let the target issue its own — DNS-01 takes under a
 minute per hostname and avoids copying private keys between machines.
 
-## Why this drops Dokploy
+## Who manages what
 
-Dokploy is not running on robco any more. Its control plane is gone; what
-remains is `/etc/dokploy/compose/<name>-<hash>/code/` holding seven checked-out
-repos and seven generated `docker-compose.yml` files, which plain
-`docker compose` is running.
+The Dokploy panel runs on `ncr` and deploys to robco over ssh. robco is one of
+its remote servers, and the target becomes another. Moving a site is mostly a
+Dokploy operation. This repo covers everything around it.
 
-Rebuilding that on the target as Dokploy would mean reinstalling a control
-plane that is not currently in use, recreating a single-node swarm that exists
-only to satisfy it, and accepting its generated artifacts:
-
-- router names like `robco-binbox-odjv6q-14-web`, carrying a dead hostname and
-  a random suffix
-- an ACME contact of `test@localhost.com`, which receives no expiry warnings
-- `api.insecure: true`, an unauthenticated Traefik dashboard on :8080
-- short-lived GitHub App tokens written into every repo's `.git/config`, all of
-  them long expired and still sitting on disk
-
-The stacks in `stacks/` are the same services with those problems removed:
-readable names, both HTTP and HTTPS routers declared in the compose file,
-secrets in gitignored `.env` files, and a shared `proxy` network instead of
-`dokploy-network`.
-
-**The trade-off, stated plainly:** you lose Dokploy's web UI and its
-git-push-to-deploy. Redeploying becomes `scripts/40-deploy-stacks.sh <name>`,
-which fetches the repo and rebuilds. If you want a panel back, install Dokploy
-on the target and import these compose files — the stacks are ordinary compose
-and do not depend on anything here.
-
-## What changes between the two machines
-
-| | robco (today) | target (after) |
+| | Managed by | Moves how |
 |---|---|---|
-| Orchestration | compose, Dokploy leftovers | compose |
-| Docker swarm | single-node, unused | none |
-| Shared network | `dokploy-network` (overlay) | `proxy` (bridge) |
-| Stack location | `/etc/dokploy/compose/<name>-<hash>/code` | `$TARGET_ROOT/stacks/<name>` |
-| Traefik config | `/etc/dokploy/traefik/` | `$TARGET_ROOT/traefik/` |
-| Router names | `robco-binbox-odjv6q-14-web` | `binbox` |
-| Traefik dashboard | `api.insecure: true` | disabled |
-| ACME email | `test@localhost.com` | your address |
-| ssh port | 2222 | 22 |
-| Tunnel | unchanged — same tunnel, same ingress, different connector host | |
+| App code, build, containers | Dokploy | point the app at the new server, redeploy |
+| Env vars and secrets of the apps | Dokploy | come along with the app |
+| Domains and HTTP routers | Dokploy (container labels) | come along with the app |
+| docker, swarm, `dokploy-network`, `dokploy-traefik` | Dokploy | installed when the server is added |
+| DNS-01 cert resolver + `CF_DNS_API_TOKEN` | `~/servset/dokploy/setup-letsencrypt-cloudflare.sh` | re-run on the target |
+| HTTPS routers (`websecure-routers.yml`) | `~/servset/dokploy/enable-https.sh` | re-run on the target |
+| binbox + penpot data | nobody. A redeploy starts empty | `11-backup-volumes.sh` → `30-restore-volumes.sh` |
+| Tunnel connector (`cloudflared.service`) | systemd, by hand | `50-cutover-dns.sh tunnel` |
+| `design.bgunnarsson.dev` A record | Cloudflare DNS | `50-cutover-dns.sh tailnet` |
+| Tailscale | by hand | `tailscale up` on the target |
+
+### Why every script runs on robco
+
+robco holds the data, the tunnel token (`/etc/cloudflared/env`, root-only) and
+the tailnet route to the target, so the scripts run there and reach the target
+over ssh. The snapshot streams from robco into the target's volumes, and the
+token goes straight from robco's file into the target's. Neither is ever
+copied anywhere else. The target needs no checkout of this repo.

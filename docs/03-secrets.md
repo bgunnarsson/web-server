@@ -1,41 +1,46 @@
 # Secrets
 
 **No secret value is in this repo, and none should ever be committed.**
-`secrets/` and `*.env` are gitignored; `*.env.example` files are the committed
-templates. `scripts/10-collect-secrets.sh` populates `secrets/` from the live
-host.
+`config/hosts.env` and `backups/` are gitignored.
 
-## The six secrets
+## App secrets: Dokploy has them
 
-| # | Secret | Lives on robco at | Needed by | Can it be regenerated? |
-|---|---|---|---|---|
-| 1 | `TUNNEL_TOKEN` | `/etc/cloudflared/env` (root, 0600) | cloudflared on the target | Yes — Cloudflare dashboard → tunnel → reissue token |
-| 2 | `CF_DNS_API_TOKEN` | env of the `dokploy-traefik` container | Traefik, for Let's Encrypt DNS-01 | Yes — create a new API token |
-| 3 | `PENPOT_SECRET_KEY` | penpot's `.env` | penpot backend + exporter | **No.** Changing it invalidates every existing session and some stored data |
-| 4 | `POSTGRES_PASSWORD` | penpot's `.env` | penpot's database | Yes, but change it in both places at once |
-| 5 | `BETTER_AUTH_SECRET` | binbox's `.env` | binbox sessions | Changing it logs everyone out; otherwise harmless |
-| 6 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | binbox's `.env` | Google sign-in on galdur.dev | From Google Cloud Console, if lost |
+`PENPOT_SECRET_KEY`, penpot's `POSTGRES_PASSWORD`, binbox's
+`BETTER_AUTH_SECRET` and Google OAuth credentials all live in each app's
+environment in Dokploy. They travel with the app when it is deployed to the new
+server, so nothing here collects or copies them.
 
-Plus a **GitHub token** you must create yourself — see below.
+Two of them must **not** change during the move, or the restored data stops
+matching:
 
-## Retrieving them
+| Secret | If it changes |
+|---|---|
+| `PENPOT_SECRET_KEY` | Every session is invalidated and some stored data becomes unreadable |
+| penpot `POSTGRES_USER` | The restore connects as `penpot`; the dump is restored `--no-owner`, so the password itself may differ |
+| `BETTER_AUTH_SECRET` | Everyone is logged out of galdur.dev. Harmless otherwise |
+
+If you recreate an app instead of moving it, copy its env from the old app in
+Dokploy rather than retyping it.
+
+## The ones outside Dokploy
+
+| Secret | Lives on robco at | Needed by | How it moves |
+|---|---|---|---|
+| `TUNNEL_TOKEN` | `/etc/cloudflared/env` (root, 0600) | cloudflared on the target | `50-cutover-dns.sh tunnel` reads it with sudo and writes it to the target's `/etc/cloudflared/env` over ssh. It is never stored anywhere else |
+| `CF_DNS_API_TOKEN` | env of the `dokploy-traefik` container | Traefik on the target, for Let's Encrypt DNS-01 | you paste it into `setup-letsencrypt-cloudflare.sh` on the target |
+| `CF_API_TOKEN` | nowhere yet. Create it | the scripts here | `config/hosts.env` |
+
+To read robco's DNS token for pasting:
 
 ```bash
-scripts/10-collect-secrets.sh
+docker inspect dokploy-traefik --format '{{range .Config.Env}}{{println .}}{{end}}' | grep CF_DNS_API_TOKEN
 ```
 
-writes `secrets/{bgunnarsson-com,bincms,binman,binsby,binvim,binbox,penpot}.env`
-plus `secrets/cloudflared.env` and `secrets/traefik.env`, all mode 0600.
+Or create a new one with `Zone:DNS:Edit` + `Zone:Zone:Read` on all zones. That
+is cleaner, because robco's copy can then be revoked with the machine.
 
-It reads the root-owned `/etc/dokploy` through a throwaway container rather
-than asking for sudo. `/etc/cloudflared/env` is mode 0600 root-only and a
-container mount cannot get around that, so if that one comes back empty, run
-on robco:
-
-```bash
-sudo cat /etc/cloudflared/env > secrets/cloudflared.env
-chmod 600 secrets/cloudflared.env
-```
+`CF_API_TOKEN` needs `Account:Cloudflare Tunnel:Read` (connector counts,
+ingress), `Zone:DNS:Edit` (the tailnet record) and `Zone:Zone:Read`.
 
 The account and tunnel IDs are encoded inside the tunnel token itself:
 
@@ -44,26 +49,7 @@ sudo sh -c 'set -a; . /etc/cloudflared/env; printf "%s" "$TUNNEL_TOKEN"' \
   | base64 -d | jq -r '"account=\(.a)  tunnel=\(.t)"'
 ```
 
-## GitHub access — you have to create this one
-
-Every repo under `/etc/dokploy/compose/*/code/.git/config` has a GitHub App
-token embedded in its remote URL:
-
-```
-https://oauth2:ghs_...@github.com/bgunnarsson/binbox.git
-```
-
-Dokploy minted those, they are short-lived, and **all of them have expired**.
-They are useless for the migration. Do not try to reuse them, and treat the
-ones still on disk as garbage to be removed with the rest of `/etc/dokploy`.
-
-Create one fine-grained PAT with **Contents: Read** on the six repos, put it in
-`secrets/github.env` as `GITHUB_TOKEN=...`, and `40-deploy-stacks.sh` will use
-it. It passes the token on the command line for the clone and then rewrites the
-remote to the clean URL, so the token is never written into `.git/config` on
-the target.
-
-## Also in this repo: a token that should be revoked
+## A token that should be revoked
 
 `~/servset/cloudflare-tunnel/cf-common.sh` on robco has a Cloudflare API token
 hard-coded as a fallback:
@@ -75,14 +61,16 @@ CF_API_TOKEN="${CF_API_TOKEN:-cfut_eqcPUJ...}"
 It was still valid when this repo was written (2026-09-24) — it reads the
 tunnel config and lists all ten zones. A token with `Zone:DNS:Edit` across
 every zone, sitting in a plaintext file, is worth rotating as part of this
-move. The scripts here take `CF_API_TOKEN` from `config/hosts.env` only and
-have no baked-in fallback.
+move, especially now that `~/servset` gets copied to the target. The scripts
+here take `CF_API_TOKEN` from `config/hosts.env` only and have no baked-in
+fallback.
 
 ## Handling rules
 
-- Copy `secrets/` between machines over `scp`/`rsync` on the tailnet. Never
-  through a chat, a paste site, or a public repo.
-- `secrets/` is mode 0700, its contents 0600. Keep it that way.
-- Volume backups in `backups/` contain the full application database. They are
-  as sensitive as the secrets — gitignored for the same reason.
-- After the move, delete `secrets/` from any machine that no longer needs it.
+- Volume backups in `backups/` contain the full application database. Treat
+  them like the secrets: gitignored, never on shared storage.
+- Copy `backups/` off robco before `90-decommission-robco.sh purge`, by
+  `tar | ssh` over the tailnet. Never through a chat, a paste site or a public repo.
+- Once the target is proven, delete robco's `/etc/cloudflared/env` along with
+  the rest of its web-server state. Two machines holding a live tunnel token is
+  one more than needed.

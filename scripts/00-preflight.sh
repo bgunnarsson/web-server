@@ -1,58 +1,79 @@
 #!/usr/bin/env bash
 # 00-preflight.sh — check both ends before anything is moved. Read-only.
+# Run on robco, after the target has been added to Dokploy and the apps deployed.
 . "$(dirname "$0")/lib.sh"
 load_hosts
+require_source
 
 rc=0
-step "Local tooling"
-for t in ssh docker jq curl git tar; do
-  if command -v "$t" >/dev/null 2>&1; then c_ok "$t"; else c_err "$t missing"; rc=1; fi
-done
-# rsync is convenient for copying the snapshot but not required — robco does not
-# have it, and `tar | ssh` works just as well. See docs/04-migration-runbook.md.
-for t in rsync; do
-  command -v "$t" >/dev/null 2>&1 && c_ok "$t (optional)" || c_warn "$t not installed — use the tar|ssh fallback"
-done
+bad()  { c_err "$*"; rc=1; }
 
-step "Source host ($SOURCE_HOST)"
-if on_source; then
-  c_ok "running on the source host directly"
-else
-  if ssh_source true 2>/dev/null; then c_ok "ssh reachable on :${SOURCE_SSH_PORT}"
-  else c_err "cannot ssh to $SOURCE_HOST:${SOURCE_SSH_PORT}"; rc=1; fi
-fi
-if run_source 'docker ps -q >/dev/null 2>&1'; then c_ok "docker usable"; else c_err "docker not usable"; rc=1; fi
+step "Local tooling (robco)"
+for t in ssh docker jq curl tar sha256sum sudo; do
+  command -v "$t" >/dev/null 2>&1 && c_ok "$t" || bad "$t missing"
+done
+docker ps -q >/dev/null 2>&1 && c_ok "docker usable" || bad "docker not usable"
+n=0; for p in $(robco_projects); do
+  [ -n "$(docker ps -q --filter "label=com.docker.compose.project=$p")" ] && n=$((n+1))
+done
+c_ok "$n Dokploy apps running here (rollback falls back to these)"
 
 step "Target host (${TARGET_HOST:-<unset>})"
 if [ -z "${TARGET_HOST:-}" ]; then
-  c_warn "TARGET_HOST not set — fill it in config/hosts.env before step 20"
-  rc=1
+  bad "TARGET_HOST not set in config/hosts.env"
+elif ! ssh_target true 2>/dev/null; then
+  bad "cannot ssh to $TARGET_HOST:${TARGET_SSH_PORT:-22} from robco"
 else
-  if ssh_target true 2>/dev/null; then
-    c_ok "ssh reachable on :${TARGET_SSH_PORT:-22}"
-    ssh_target 'command -v docker >/dev/null' && c_ok "docker installed" || c_warn "docker not installed (20-provision-target.sh installs it)"
-    ssh_target 'docker ps -q >/dev/null 2>&1' && c_ok "docker usable without sudo" || c_warn "user not in docker group yet"
-    # 2.1 GB of volumes plus images and build caches; 20 GB is a safe floor.
-    free_kb=$(ssh_target "df -Pk ${TARGET_ROOT%/*} 2>/dev/null | awk 'NR==2{print \$4}'" || echo 0)
-    if [ "${free_kb:-0}" -ge 20971520 ]; then c_ok "$((free_kb/1048576)) GB free on target"
-    else c_warn "only $((free_kb/1048576)) GB free — want 20 GB+ (volumes alone are ~2.1 GB)"; fi
-    ssh_target 'command -v tailscale >/dev/null && tailscale status >/dev/null 2>&1' \
-      && c_ok "tailscale up" || c_warn "tailscale not up (needed for penpot's tailnet-only hostname)"
+  require_target
+  c_ok "ssh reachable on :${TARGET_SSH_PORT:-22}"
+  ssh_target 'docker ps -q >/dev/null 2>&1' && c_ok "docker usable without sudo" \
+    || bad "docker not usable by ${TARGET_SSH_USER:-this user} — add it to the docker group"
+
+  # Dokploy installs its own Traefik when the server is added.
+  if ssh_target 'docker ps --format "{{.Names}}"' | grep -qx dokploy-traefik; then
+    c_ok "dokploy-traefik running (server is set up in Dokploy)"
+    env=$(ssh_target 'docker inspect dokploy-traefik --format "{{range .Config.Env}}{{println .}}{{end}}"')
+    grep -q '^CF_DNS_API_TOKEN=.' <<<"$env" && c_ok "Traefik has CF_DNS_API_TOKEN (DNS-01 certs)" \
+      || bad "Traefik has no CF_DNS_API_TOKEN — run ~/servset/dokploy/setup-letsencrypt-cloudflare.sh on the target"
+    ssh_target 'cat /etc/dokploy/traefik/dynamic/websecure-routers.yml 2>/dev/null' | grep -q 'design.bgunnarsson.dev' \
+      && c_ok "HTTPS router for design.bgunnarsson.dev present" \
+      || bad "no HTTPS router for design.bgunnarsson.dev — run ~/servset/dokploy/enable-https.sh on the target after deploying penpot"
   else
-    c_err "cannot ssh to $TARGET_HOST:${TARGET_SSH_PORT:-22}"; rc=1
+    bad "no dokploy-traefik on the target — add it as a server in Dokploy first"
   fi
+
+  labels=$(ssh_target 'docker ps --format "{{.Labels}}"')
+  while IFS=$'\t' read -r name domains exposure stateful; do
+    h="${domains%%,*}"
+    grep -qF "Host(\`$h\`)" <<<"$labels" && c_ok "$name deployed (serves $h)" \
+      || bad "$name: no running container serves $h — deploy it to $TARGET_HOST in Dokploy"
+  done < <(sites)
+
+  free_kb=$(ssh_target 'df -Pk /var/lib/docker 2>/dev/null || df -Pk /' | awk 'NR==2{print $4}')
+  if [ "${free_kb:-0}" -ge 10485760 ]; then c_ok "$((free_kb/1048576)) GB free for docker"
+  else c_warn "only $((${free_kb:-0}/1048576)) GB free — the restore needs ~2.1 GB plus headroom"; fi
+
+  tip=$(ssh_target 'tailscale ip -4 2>/dev/null' || true)
+  if [ -z "$tip" ]; then bad "tailscale not up on the target (penpot is tailnet-only)"
+  elif [ "$tip" != "${TARGET_TAILSCALE_IP:-}" ]; then
+    bad "target tailnet IP is $tip but TARGET_TAILSCALE_IP=${TARGET_TAILSCALE_IP:-<unset>}"
+  else c_ok "tailscale up, $tip"; fi
+
+  ssh_target 'command -v cloudflared >/dev/null' && c_ok "cloudflared installed" \
+    || bad "cloudflared not installed on the target (Arch: pacman -S cloudflared; Debian: pkg.cloudflare.com)"
+  ssh_target 'systemctl is-active -q cloudflared' \
+    && bad "cloudflared is already RUNNING on the target — two connectors split traffic" \
+    || c_ok "cloudflared not running yet (correct until cutover)"
 fi
 
 step "Cloudflare API"
 if [ -z "${CF_API_TOKEN:-}" ]; then
-  c_err "CF_API_TOKEN not set in config/hosts.env"; rc=1
-else
-  if curl -sS "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/cfd_tunnel/$CF_TUNNEL_ID/configurations" \
+  bad "CF_API_TOKEN not set in config/hosts.env"
+elif curl -sS "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/cfd_tunnel/$CF_TUNNEL_ID/connections" \
        -H "Authorization: Bearer $CF_API_TOKEN" | jq -e '.success' >/dev/null; then
-    c_ok "token can read the tunnel config"
-  else
-    c_err "token cannot read tunnel $CF_TUNNEL_ID — check scopes (Account:Cloudflare Tunnel:Edit)"; rc=1
-  fi
+  c_ok "token can read the tunnel"
+else
+  bad "token cannot read tunnel $CF_TUNNEL_ID — check scopes (Account:Cloudflare Tunnel:Read)"
 fi
 
 echo

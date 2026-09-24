@@ -64,29 +64,43 @@ other two cannot.
 | `tailscaled.service` | systemd | private network |
 | `sshd.service` | systemd, **port 2222** | not 22 — see below |
 
-### Two things that are not what they look like
+### Dokploy runs on ncr, not here
 
-**Dokploy is already gone.** `/etc/dokploy/` and the `robco-*-<hash>` project
-names are its leftovers, but the Dokploy control plane is not running —
-`docker service ls` is empty and there is no panel container. What actually
-runs is seven ordinary `docker compose` projects plus a Traefik container.
-There is nothing to migrate about Dokploy itself. This repo therefore rebuilds
-the sites as plain compose stacks; see
-[02-architecture.md](02-architecture.md#why-this-drops-dokploy).
+robco is a **remote server** of the Dokploy panel on `ncr`. The panel is
+reached at `bgunnarsson.dev` through ncr's `dokploy` tunnel. It SSHes into
+robco on :2222 and runs everything here: seven compose projects under
+`/etc/dokploy/compose/<app>-<hash>/`, plus `dokploy-traefik`. That is why
+there is no panel container and `docker service ls` is empty. The single-node
+swarm is part of Dokploy's remote-server setup.
 
-**The swarm exists only because Dokploy wanted one.** It has a single node and
-no services. `docker swarm leave --force` during decommissioning costs nothing.
+So moving the sites means pointing each Dokploy app at the new server and
+redeploying. Only what Dokploy does not manage needs this repo: the data, the
+tunnel connector, the tailnet hostname and the Traefik edits below.
+
+### Traefik was changed by hand
+
+Dokploy generated robco's Traefik; `~/servset/dokploy/` changed it on
+2026-06-16. None of this happens on a new Dokploy server by itself:
+
+| Change | Made by | Why it matters |
+|---|---|---|
+| ACME `httpChallenge` → `dnsChallenge` (Cloudflare) in `/etc/dokploy/traefik/traefik.yml` | `setup-letsencrypt-cloudflare.sh` | HTTP-01 cannot work behind Cloudflare's proxy or for a tailnet-only host |
+| `CF_DNS_API_TOKEN` in the `dokploy-traefik` container's env | same | DNS-01 needs it |
+| `dynamic/websecure-routers.yml`, an HTTPS copy of every app's HTTP router | `enable-https.sh` | Dokploy only made HTTP routers. **penpot's only HTTPS route** comes from this file |
+
+Re-run both scripts on the target (runbook phase 2). Still as Dokploy left
+them, and worth fixing in its Traefik settings some time: `api.insecure: true`
+(unauthenticated dashboard on :8080) and an ACME email of `test@localhost.com`.
 
 ### sshd on port 2222
 
 `/etc/ssh/sshd_config` sets `Port 2222`, with `PasswordAuthentication no` and
-`PermitRootLogin no`. Dokploy used to SSH to the host at its own tailnet
-address on that port. Every script in this repo uses `SOURCE_SSH_PORT=2222`
-for robco. The target has no such constraint.
+`PermitRootLogin no`. The Dokploy panel on ncr connects on that port. The
+scripts here run on robco itself, so they never ssh to it.
 
 ## Secrets in use
 
-Six, enumerated with their locations in [03-secrets.md](03-secrets.md).
+Enumerated with their locations in [03-secrets.md](03-secrets.md).
 
 ## Deliberately out of scope
 

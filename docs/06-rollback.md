@@ -9,60 +9,61 @@ robco still has every container, volume and config file it started with.
 scripts/50-cutover-dns.sh rollback
 ```
 
-Stops cloudflared on the target, starts it on robco. Public sites are back
-within seconds. No DNS changes, nothing to propagate.
+In one step, it:
+
+1. Stops cloudflared on the target and starts it on robco. Public sites are
+   back within seconds, with no DNS change.
+2. Starts every Dokploy app's containers on robco, including binbox and
+   penpot, which `11-backup-volumes.sh --freeze` stopped.
+3. Points `design.bgunnarsson.dev` back at robco's tailnet IP
+   (`SOURCE_TAILSCALE_IP`), DNS-only. TTL is 60 seconds.
 
 Then check:
 
 ```bash
-scripts/50-cutover-dns.sh check     # expect exactly 1 connector
+scripts/50-cutover-dns.sh check     # expect exactly 1 connector, robco's IP
 curl -I https://galdur.dev/
 ```
 
-## If the tailnet hostname was already repointed
+**What rollback loses:** anything written to binbox or penpot on the target
+after the restore. robco's data is exactly as it was at the freeze. If the
+target ran for a while and took real writes, snapshot the target before
+rolling back and decide what to keep. The volumes are ordinary docker volumes
+and `11-`'s commands work there by hand.
 
-`50-cutover-dns.sh tailnet` moved `design.bgunnarsson.dev` to the target's
-Tailscale IP. To put it back, set `TARGET_TAILSCALE_IP=100.87.155.125`
-(robco's) in `config/hosts.env` and re-run the `tailnet` sub-command, or set
-the A record by hand in the dashboard. **Keep it DNS-only / grey cloud.** TTL
-is 60 seconds, so it takes effect quickly.
+## If Dokploy removed robco's containers
 
-## If robco's containers were already stopped
+Changing an app's server in Dokploy may or may not clean up the old one.
+`00-preflight.sh` reports how many Dokploy apps are still running on robco. If
+some are gone, rollback cannot bring them back. Redeploy those apps to robco
+from Dokploy instead. The volumes are still there, and a redeploy under the
+same app name reuses them. Check with `docker volume ls` that it did.
+
+## If `90- stop` already ran
+
+`stop` only stops things. The `rollback` command above reverses it, except for
+Traefik:
 
 ```bash
-scripts/90-decommission-robco.sh stop    # only stops; data untouched
-```
-
-is reversible by hand:
-
-```bash
-sudo systemctl enable --now cloudflared
 docker start dokploy-traefik
-for d in $(docker run --rm -v /etc/dokploy:/x:ro alpine ls /x/compose); do
-  docker compose -p "$d" start
-done
+scripts/50-cutover-dns.sh rollback
 ```
 
-## If `archive` already ran
+## If `90- archive` already ran
 
-It leaves the swarm and moves `/etc/dokploy` to `/etc/dokploy.retired-<date>`.
-The sites still run — Traefik and the compose projects do not depend on either.
-To fully undo:
-
-```bash
-sudo mv /etc/dokploy.retired-* /etc/dokploy
-```
-
-The swarm does not need recreating; nothing used it.
+robco is no longer a Dokploy server, has left the swarm, and `/etc/dokploy`
+has moved to `/etc/dokploy.retired-<date>`. The volumes are still there.
+Re-add robco as a server in Dokploy and redeploy the apps to it. Under the same
+app names they reuse the volumes. If the names change, copy the data across by
+hand (`30-` refuses to target robco, on purpose). Dokploy recreates the swarm
+when the server is added.
 
 ## After `purge`
 
 Volumes are gone and **this cannot be undone on the machine**. Recovery means
-restoring from a snapshot:
-
-```bash
-scripts/30-restore-volumes.sh backups/<timestamp>
-```
+deploying the apps somewhere and restoring from a snapshot with
+`30-restore-volumes.sh backups/<timestamp>`, with that machine as
+`TARGET_HOST`.
 
 `archive` takes a fresh backup before removing anything, so there is always one
 snapshot newer than the destruction — provided it is stored somewhere other
@@ -75,7 +76,8 @@ than robco. Copy `backups/` off the machine before running `purge`.
 | A site 404s or 502s on the target | Fix on the target; robco is idle, no rush |
 | All sites down after cutover | `rollback`, then investigate |
 | Sites work intermittently | Two connectors — `check`, stop the extra one |
-| penpot loads but files are empty | Stop penpot, re-run `30-restore-volumes.sh` with `FORCE=1` |
-| penpot rejects logins | `PENPOT_SECRET_KEY` does not match the original |
-| binbox logs everyone out | `BETTER_AUTH_SECRET` does not match; cosmetic, fix and restart |
-| Cert errors on design.bgunnarsson.dev | Traefik's `CF_DNS_API_TOKEN` — check `docker logs traefik \| grep -i acme` |
+| penpot loads but files are empty | Re-run `30-restore-volumes.sh`. It wipes and reloads |
+| penpot rejects logins | `PENPOT_SECRET_KEY` in Dokploy does not match the original |
+| binbox logs everyone out | `BETTER_AUTH_SECRET` does not match; cosmetic, fix and redeploy |
+| Cert errors on design.bgunnarsson.dev | Traefik on the target lacks DNS-01 — re-run `setup-letsencrypt-cloudflare.sh`, check `docker logs dokploy-traefik 2>&1 \| grep -i acme` |
+| design.bgunnarsson.dev 404s on the target | No HTTPS router — run `~/servset/dokploy/enable-https.sh` on the target |

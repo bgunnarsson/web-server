@@ -16,6 +16,7 @@ what to keep, what to remove, and what to change.
 
 | | Command |
 |---|---|
+| robco as a Dokploy server | delete it in the Dokploy panel on ncr (`archive` asks you to) |
 | Docker swarm | `docker swarm leave --force` (done by `archive`) |
 | Dokploy state | moved to `/etc/dokploy.retired-*` by `archive`; delete when sure |
 | cloudflared | `sudo systemctl disable --now cloudflared`, then uninstall if you want |
@@ -23,10 +24,10 @@ what to keep, what to remove, and what to change.
 
 ## Change
 
-**ssh back to 22, if you want.** Port 2222 exists only because Dokploy wanted
-it. On the tailnet the port is not a security measure either way. If you change
-it, update `SOURCE_SSH_PORT` in `config/hosts.env` and anything else that
-hard-codes 2222.
+**ssh back to 22, if you want.** Port 2222 is where the Dokploy panel on ncr
+connected; once robco is removed from Dokploy nothing depends on it. On the
+tailnet the port is not a security measure either way. If you change it,
+update `SOURCE_SSH_PORT` in `config/hosts.env` and your ssh config.
 
 **Ports 80 and 443 come free.** Once Traefik is gone, nothing listens there.
 Handy for a dev server without arguing with a reverse proxy.
@@ -45,7 +46,7 @@ fewer daemons.
 ## A note on the other boxes
 
 `ncr`, `vaultec` and `enclave` share the LAN and tailnet and are **not** part
-of this migration. If you pick `ncr` as the target, read the second-tunnel
-warning in [05-dns-cloudflare.md](05-dns-cloudflare.md) first: the `dokploy`
-tunnel on ncr has ingress rules pointing at `http://robco:80`, which will be a
-dev machine.
+of this migration. ncr runs the Dokploy panel. If you pick it as the target, add it
+to Dokploy as its own server rather than as a remote one, and read the
+second-tunnel note in [05-dns-cloudflare.md](05-dns-cloudflare.md): the
+`dokploy` tunnel on ncr has ingress rules pointing at `http://robco:80`.

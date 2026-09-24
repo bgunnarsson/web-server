@@ -1,15 +1,13 @@
-# Secrets are never committed. `scripts/10-collect-secrets.sh` writes here.
-secrets/
+# Host settings (CF_API_TOKEN lives here). Never committed.
+config/hosts.env
 *.env
 !*.env.example
-# Volume backups produced by 11-backup-volumes.sh
+secrets/
+# Volume backups produced by 11-backup-volumes.sh — full application data.
 backups/
 *.tar
 *.tar.gz
 *.tar.zst
+*.dump
 *.sql
 *.sql.gz
-# Cloned application source (see scripts/40-deploy-stacks.sh)
-stacks/*/src/
-# Traefik ACME state (contains private keys)
-acme.json

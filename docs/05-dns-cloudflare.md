@@ -34,9 +34,11 @@ nothing else.
 
 - **`5912c888-4551-474f-9e86-48a22f0f9ece`** (`dokploy`) — connector runs on
   `ncr`. Serves `bgunnarsson.dev` → a Dokploy panel on ncr, and proxies the six
-  zones to `http://robco:80` over the tailnet as a second path. **If you pick
-  `ncr` as the target, check this tunnel first**: its `robco:80` rules would
-  point at a decommissioned machine.
+  zones to `http://robco:80` over the tailnet as a second path. DNS does not
+  route to those rules today, but they will point at a dev box once robco is
+  retired. `50-cutover-dns.sh check` lists them. Repoint or remove them in the
+  dashboard after cutover. **If you pick `ncr` as the target**, point them at
+  `http://localhost:80` instead.
 - **`804d3d46-…`** — belongs to a different tailnet box, used by
   `binflix.is`. Dead and not fixable from here.
 
@@ -66,9 +68,9 @@ build their hostname list from **live Traefik labels**. Traefik serves
 `design.bgunnarsson.dev`, so both scripts would happily publish it. They are
 guarded by `cloudflare-tunnel/tunnel-exclude.txt`, which lists it.
 
-**If you carry those scripts to the target, carry `tunnel-exclude.txt` with
-them.** The stacks in this repo do not need them — routers are declared
-statically in each compose file — but the guard matters if you keep using them.
+**The runbook copies all of `~/servset` to the target, so `tunnel-exclude.txt`
+travels with the scripts. Keep it that way.** If you ever copy only part of it,
+carry the exclude file too.
 
 ## DNS during cutover
 

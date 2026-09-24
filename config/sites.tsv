@@ -1,10 +1,11 @@
-# name	github_repo	domains (comma-sep)	container_port	exposure	stateful
+# name	domains (comma-sep)	exposure	stateful
 # exposure: public = published through the Cloudflare tunnel
 #           tailnet = DNS-only A record to the host's tailnet IP, never on the tunnel
-bgunnarsson-com	bgunnarsson/bgunnarsson.com	bgunnarsson.com,www.bgunnarsson.com	80	public	no
-bincms	bgunnarsson/bincms-web	bincms.dev,www.bincms.dev	80	public	no
-binman	bgunnarsson/binman-web	binman.is,www.binman.is	80	public	no
-binsby	bgunnarsson/binsby-web	binsby.com,www.binsby.com	80	public	no
-binvim	bgunnarsson/binvim-web	binvim.dev,www.binvim.dev	80	public	no
-binbox	bgunnarsson/binbox	galdur.dev,www.galdur.dev	8787	public	yes
-penpot	-	design.bgunnarsson.dev	8080	tailnet	yes
+# The apps themselves are defined in Dokploy; this list is what 60-verify.sh checks.
+bgunnarsson-com	bgunnarsson.com,www.bgunnarsson.com	public	no
+bincms	bincms.dev,www.bincms.dev	public	no
+binman	binman.is,www.binman.is	public	no
+binsby	binsby.com,www.binsby.com	public	no
+binvim	binvim.dev,www.binvim.dev	public	no
+binbox	galdur.dev,www.galdur.dev	public	yes
+penpot	design.bgunnarsson.dev	tailnet	yes
